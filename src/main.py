@@ -1,55 +1,99 @@
-# main.py
+"""
+メインモジュール
 
-import torch
-from torch import nn, optim
-from torch.utils.data import DataLoader, Dataset
+このスクリプトは、Hugging Face Transformersを使用してBERTモデルのファインチューニングを行います。IMDbデータセットを使用し、映画レビューの感情分析モデルを作成します。
+"""
 
-class SimpleDataset(Dataset):
-    def __init__(self, data, targets):
-        self.data = data
-        self.targets = targets
+from transformers import Trainer, TrainingArguments, AutoModelForSequenceClassification, AutoTokenizer
+from datasets import load_dataset
+import numpy as np
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        return self.data[idx], self.targets[idx]
-
-def train_model():
+def compute_metrics(eval_pred):
     """
-    簡単なモデルのトレーニングを行う関数
+    モデル評価のためのメトリクスを計算する関数
+
+    Args:
+        eval_pred: 評価予測結果
+    Returns:
+        metrics: 精度、適合率、再現率、F1スコアを含む辞書
     """
-    # データセットの準備
-    data = torch.randn(100, 10)
-    targets = torch.randint(0, 2, (100,))
-    dataset = SimpleDataset(data, targets)
-    dataloader = DataLoader(dataset, batch_size=10, shuffle=True)
+    logits, labels = eval_pred
+    predictions = np.argmax(logits, axis=-1)
+    precision, recall, f1, _ = precision_recall_fscore_support(labels, predictions, average='binary')
+    acc = accuracy_score(labels, predictions)
+    return {'accuracy': acc, 'precision': precision, 'recall': recall, 'f1': f1}
 
-    # モデルの定義
-    model = nn.Sequential(
-        nn.Linear(10, 5),
-        nn.ReLU(),
-        nn.Linear(5, 2)
-    )
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(), lr=0.01)
+def tokenize_function(example):
+    """
+    トークナイズ関数
 
-    # トレーニングループ
-    for epoch in range(5):
-        for inputs, labels in dataloader:
-            optimizer.zero_grad()
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
-        print(f"Epoch {epoch+1}, Loss: {loss.item()}")
+    Args:
+        example: データセットの各例
+    Returns:
+        トークナイズされた入力
+    """
+    return tokenizer(example["text"], padding="max_length", truncation=True)
 
 def main():
     """
     メイン関数
     """
-    print("LLMを活用したプロジェクト1の実行")
-    train_model()
+    # モデル名の指定
+    model_name = "bert-base-uncased"
+
+    # トークナイザとモデルのロード
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForSequenceClassification.from_pretrained(model_name)
+
+    # データセットのロード（IMDbレビュー）
+    print("データセットをロードしています...")
+    dataset = load_dataset("imdb")
+
+    # データセットのトークナイズ
+    print("データセットをトークナイズしています...")
+    tokenized_datasets = dataset.map(tokenize_function, batched=True)
+
+    # トレーニングと評価用データセットの準備
+    print("データセットを準備しています...")
+    small_train_dataset = tokenized_datasets["train"].shuffle(seed=42).select(range(2000))
+    small_eval_dataset = tokenized_datasets["test"].shuffle(seed=42).select(range(1000))
+
+    # トレーニングパラメータの設定
+    training_args = TrainingArguments(
+        output_dir="./results",
+        num_train_epochs=3,
+        per_device_train_batch_size=8,
+        per_device_eval_batch_size=8,
+        evaluation_strategy="epoch",
+        save_strategy="epoch",
+        logging_dir="./logs",
+        logging_steps=10,
+    )
+
+    # トレーナーの初期化
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=small_train_dataset,
+        eval_dataset=small_eval_dataset,
+        compute_metrics=compute_metrics,
+    )
+
+    # トレーニングの実行
+    print("モデルのファインチューニングを開始します...")
+    trainer.train()
+
+    # モデルの評価
+    print("モデルを評価しています...")
+    eval_results = trainer.evaluate()
+    print(f"評価結果: {eval_results}")
+
+    # モデルの保存
+    print("ファインチューニング済みモデルを保存しています...")
+    model.save_pretrained("./fine_tuned_model")
+    tokenizer.save_pretrained("./fine_tuned_model")
+    print("完了しました。")
 
 if __name__ == "__main__":
     main()
